@@ -92,8 +92,7 @@ if theres not a way to iteratively download all the files, then i can do it manu
 by asking chat to make like 4000 lines of code with the globus transfer command, 2000 for centers and 2000 for shapes
 look into that more
 
-might need ls *.txt
-download the shape and center files for the 0th simulation
-do it manually for all 2000 files
-need to create the code to iterate through all the simulations
+might need ls *.txt to list all the files in the directory of the void data
+because the void data has the same starting name for all the simulations
+shapes_all_Quijote or centers_all_Quijote and then the simulation number
 '''
