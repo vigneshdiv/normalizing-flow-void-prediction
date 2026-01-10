@@ -95,4 +95,15 @@ look into that more
 might need ls *.txt to list all the files in the directory of the void data
 because the void data has the same starting name for all the simulations
 shapes_all_Quijote or centers_all_Quijote and then the simulation number
+maybe i can do it like this:
+for simulation in range(2000):
+    shapes_file = Path(f"/Users/vignesh/Documents/VoidData/shapes_all_Quijote_{simulation}_ss1.0_z0.00_d00.out")
+    centers_file = Path(f"/Users/vignesh/Documents/VoidData/centers_all_Quijote_{simulation}_ss1.0_z0.00_d00.out")
+    shapes_data = []
+    with open(shapes_file) as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            parts = line.strip().split()
+            void_id = int(parts[0])
 '''
