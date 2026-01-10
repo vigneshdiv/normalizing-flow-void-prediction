@@ -95,4 +95,34 @@ look into that more
 might need ls *.txt to list all the files in the directory of the void data
 because the void data has the same starting name for all the simulations
 shapes_all_Quijote or centers_all_Quijote and then the simulation number
+maybe i can do it like this:
+for simulation in range(2000):
+    shapes_file = Path(f"/Users/vignesh/Documents/VoidData/shapes_all_Quijote_{simulation}_ss1.0_z0.00_d00.out")
+    centers_file = Path(f"/Users/vignesh/Documents/VoidData/centers_all_Quijote_{simulation}_ss1.0_z0.00_d00.out")
+    shapes_data = []
+    with open(shapes_file) as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            parts = line.strip().split()
+            void_id = int(parts[0])
+            ellipticity = float(parts[1])
+            shapes_data.append([void_id, ellipticity])
+    shapes_df = pd.DataFrame(shapes_data, columns=["void_id", "ellipticity"])
+    centers_data = []
+    with open(centers_file) as f:
+        for line in f:
+            if line.startswith("#"):
+                continue
+            parts = line.strip().split()
+            radius = float(parts[4])
+            void_id = int(parts[7])
+            density_contrast = float(parts[8])
+            centers_data.append([void_id, density_contrast, radius])
+    centers_df = pd.DataFrame(centers_data, columns=["void_id", "density_contrast", "radius"])
+    merged_df = pd.merge(centers_df, shapes_df, on="void_id", how="inner")
+    output_csv = Path(f"/Users/vignesh/Documents/VoidData/simulation_{simulation}_voids.csv")
+    merged_df.to_csv(output_csv, index=False)
+    print(f"Merged CSV saved: {output_csv}")
+    print(merged_df.head())
 '''
