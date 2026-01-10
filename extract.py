@@ -93,4 +93,6 @@ by asking chat to make like 4000 lines of code with the globus transfer command,
 look into that more
 
 might need ls *.txt
+download the shape and center files for the 0th simulation
+do it manually for all 2000 files
 '''
