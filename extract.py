@@ -125,4 +125,12 @@ for simulation in range(2000):
     merged_df.to_csv(output_csv, index=False)
     print(f"Merged CSV saved: {output_csv}")
     print(merged_df.head())
+
+new to-dos
+    1) download all 2000 simulations from the void data
+    2) have a mean column for each property (3 properties, 3 means)
+       - the mean will be between the min and max of the property
+       - look at recording for how to do this
+       - this mean should be unique to each simulation, not the same using the 2000 like the 3rd to-do says
+    3) the bins should be based on the data pulled from all 2000 simulations, not just the 0th, 1st, etc. simulation
 '''
