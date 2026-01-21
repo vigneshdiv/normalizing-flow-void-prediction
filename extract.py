@@ -1,8 +1,8 @@
 from pathlib import Path
 import pandas as pd
 
-shapes_file = Path("/Users/vignesh/Documents/VoidData/shapes_all_Quijote_0_ss1.0_z0.00_d00.out")
-centers_file = Path("/Users/vignesh/Documents/VoidData/centers_all_Quijote_0_ss1.0_z0.00_d00.out")
+shapes_file = Path("/Users/vignesh/Documents/VoidData/shapes_all_Quijote_1_ss1.0_z0.00_d00.out")
+centers_file = Path("/Users/vignesh/Documents/VoidData/centers_all_Quijote_1_ss1.0_z0.00_d00.out")
 
 # need to make something here to iterate through all the simulations
 # for simulation in range(2000):
@@ -56,7 +56,7 @@ centers_df = pd.DataFrame(centers_data, columns=["void_id", "density_contrast", 
 merged_df = pd.merge(centers_df, shapes_df, on="void_id", how="inner")
 
 # saves the merged dataframe to a csv file
-output_csv = Path("/Users/vignesh/Documents/VoidData/simulation_0_voids.csv")
+output_csv = Path("/Users/vignesh/Documents/VoidData/simulation_1_voids.csv")
 merged_df.to_csv(output_csv, index=False)
 
 # prints the merged dataframe
