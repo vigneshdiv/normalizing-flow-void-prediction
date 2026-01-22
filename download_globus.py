@@ -9,8 +9,8 @@ import time
 
 # Configuration
 SOURCE_ENDPOINT_ID = "e0eae0aa-5bca-11ea-9683-0e56c063f437"
-START_SIM = 2
-END_SIM = 100
+START_SIM = 1501 # change to 101
+END_SIM = 1999 # change to 1999
 DEST_DIR = Path("/Users/vignesh/Documents/VoidData")
 
 

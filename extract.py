@@ -1,136 +1,102 @@
 from pathlib import Path
 import pandas as pd
 
-shapes_file = Path("/Users/vignesh/Documents/VoidData/shapes_all_Quijote_1_ss1.0_z0.00_d00.out")
-centers_file = Path("/Users/vignesh/Documents/VoidData/centers_all_Quijote_1_ss1.0_z0.00_d00.out")
+# Directory paths
+SHAPES_DIR = Path("/Users/vignesh/Documents/VoidData/ShapesAll")
+CENTERS_DIR = Path("/Users/vignesh/Documents/VoidData/CentersAll")
+OUTPUT_DIR = Path("/Users/vignesh/Documents/VoidData/ExcelData")
 
-# need to make something here to iterate through all the simulations
-# for simulation in range(2000):
-#     shapes_file = Path(f"/Users/vignesh/Documents/VoidData/shapes_all_Quijote_{simulation}_ss1.0_z0.00_d00.out")
-#     centers_file = Path(f"/Users/vignesh/Documents/VoidData/centers_all_Quijote_{simulation}_ss1.0_z0.00_d00.out")
+# Process simulations 2 through 1999 (skipping 0 and 1 since they already exist)
+START_SIM = 1898
+END_SIM = 1999
 
-# opens the file and reads the data
-# skips the header lines
-# splits the line into parts
-# void_id is the first part
-# ellipticity is the second part
-# appends the data to the shapes_data list
-# creates a dataframe from the shapes_data list
-# repeats for the centers_file
-# merges the two dataframes on the void_id column
-shapes_data = []
-with open(shapes_file) as f:
-    for line in f:
-        if line.startswith("#"):
+print(f"Processing simulations {START_SIM} to {END_SIM}...")
+print(f"Shapes directory: {SHAPES_DIR}")
+print(f"Centers directory: {CENTERS_DIR}")
+print(f"Output directory: {OUTPUT_DIR}\n")
+
+successful = 0
+
+failed = 0
+
+for simulation in range(START_SIM, END_SIM + 1):
+    try:
+        # Construct file paths
+        shapes_file = SHAPES_DIR / f"shapes_all_Quijote_{simulation}_ss1.0_z0.00_d00.out"
+        centers_file = CENTERS_DIR / f"centers_all_Quijote_{simulation}_ss1.0_z0.00_d00.out"
+        output_csv = OUTPUT_DIR / f"simulation_{simulation}_voids.csv"
+        
+        # Check if output already exists
+        if output_csv.exists():
+            print(f"[{simulation}/{END_SIM}] Simulation {simulation}: Output already exists, skipping...")
+            successful += 1
             continue
-        parts = line.strip().split()
-        void_id = int(parts[0])
-        ellipticity = float(parts[1])
-        shapes_data.append([void_id, ellipticity])
-
-shapes_df = pd.DataFrame(shapes_data, columns=["void_id", "ellipticity"])
-
-# opens the file and reads the data
-# skips the header lines
-# splits the line into parts
-# radius is the fourth part
-# void_id is the seventh part
-# appends the data to the centers_data list
-# creates a dataframe from the centers_data list
-# merges the two dataframes on the void_id column
-centers_data = []
-with open(centers_file) as f:
-    for line in f:
-        if line.startswith("#"):
+        
+        # Check if input files exist
+        if not shapes_file.exists():
+            print(f"[{simulation}/{END_SIM}] Simulation {simulation}: Shapes file not found, skipping...")
+            failed += 1
             continue
-        parts = line.strip().split()
-        radius = float(parts[4])
-        void_id = int(parts[7])
-        density_contrast = float(parts[8])
-        centers_data.append([void_id, density_contrast, radius])
+        
+        if not centers_file.exists():
+            print(f"[{simulation}/{END_SIM}] Simulation {simulation}: Centers file not found, skipping...")
+            failed += 1
+            continue
+        
+        print(f"[{simulation}/{END_SIM}] Processing simulation {simulation}...")
+        
+        # Read shapes file
+        shapes_data = []
+        with open(shapes_file) as f:
+            for line in f:
+                if line.startswith("#"):
+                    continue
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    void_id = int(parts[0])
+                    ellipticity = float(parts[1])
+                    shapes_data.append([void_id, ellipticity])
+        
+        shapes_df = pd.DataFrame(shapes_data, columns=["void_id", "ellipticity"])
+        
+        # Read centers file
+        centers_data = []
+        with open(centers_file) as f:
+            for line in f:
+                if line.startswith("#"):
+                    continue
+                parts = line.strip().split()
+                if len(parts) >= 9:
+                    radius = float(parts[4])
+                    void_id = int(parts[7])
+                    density_contrast = float(parts[8])
+                    centers_data.append([void_id, density_contrast, radius])
+        
+        centers_df = pd.DataFrame(centers_data, columns=["void_id", "density_contrast", "radius"])
+        
+        # Merge the two dataframes on void_id using inner join
+        merged_df = pd.merge(centers_df, shapes_df, on="void_id", how="inner")
+        
+        # Save the merged dataframe to CSV
+        merged_df.to_csv(output_csv, index=False)
+        
+        print(f"  ✓ Saved: {output_csv} ({len(merged_df)} voids)")
+        successful += 1
+        
+        # Print progress every 100 simulations
+        if simulation % 100 == 0:
+            print(f"\nProgress: {simulation - START_SIM + 1} simulations processed\n")
+            
+    except Exception as e:
+        print(f"[{simulation}/{END_SIM}] Simulation {simulation}: Error - {e}")
+        failed += 1
+        continue
 
-# creates a dataframe from the centers_data list
-centers_df = pd.DataFrame(centers_data, columns=["void_id", "density_contrast", "radius"])
-
-# merges the two dataframes on the void_id column using an inner join
-merged_df = pd.merge(centers_df, shapes_df, on="void_id", how="inner")
-
-# saves the merged dataframe to a csv file
-output_csv = Path("/Users/vignesh/Documents/VoidData/simulation_1_voids.csv")
-merged_df.to_csv(output_csv, index=False)
-
-# prints the merged dataframe
-print(f"Merged CSV saved: {output_csv}")
-print(merged_df.head())
-
-'''
-using the 0th simulation
-example, use radius, density contrast, and ellipticity columns
-use numpy to find the min and max
-then, use numpy linspace to create 18 bins between min and max, and input the data as well into linspace
-generate any distribution plot to see the distribution of voids in each bin
-do density as true (which gives the normalized values) or you can do the frequency of voids in each bin
-create a single new excel sheet with the three properties and their respective frequencies
-it should be like this:
-    density contrast | radius | ellipticity
-0   0.033             1.345    0.462
-1
-2
-3
-4
-
-so at the end, i should i have 2000 excel files
-
---------------
-
-for the globus part, i can do pip install globus-cli in the vs code terminal
-then i need to do globus login in the terminal: $ globus login
-then i can do globus transfer SOURCE_ENDPOINT_ID:SOURCE_PATH DESTINATION_ENDPOINT_ID:DESTINATION_PATH --recursive
-maybe try it for one center all and one shape all of the same simulation (like 1st simulation) then do all of them
-
-if theres not a way to iteratively download all the files, then i can do it manually for all 2000 files 
-by asking chat to make like 4000 lines of code with the globus transfer command, 2000 for centers and 2000 for shapes
-look into that more
-
-might need ls *.txt to list all the files in the directory of the void data
-because the void data has the same starting name for all the simulations
-shapes_all_Quijote or centers_all_Quijote and then the simulation number
-maybe i can do it like this:
-for simulation in range(2000):
-    shapes_file = Path(f"/Users/vignesh/Documents/VoidData/shapes_all_Quijote_{simulation}_ss1.0_z0.00_d00.out")
-    centers_file = Path(f"/Users/vignesh/Documents/VoidData/centers_all_Quijote_{simulation}_ss1.0_z0.00_d00.out")
-    shapes_data = []
-    with open(shapes_file) as f:
-        for line in f:
-            if line.startswith("#"):
-                continue
-            parts = line.strip().split()
-            void_id = int(parts[0])
-            ellipticity = float(parts[1])
-            shapes_data.append([void_id, ellipticity])
-    shapes_df = pd.DataFrame(shapes_data, columns=["void_id", "ellipticity"])
-    centers_data = []
-    with open(centers_file) as f:
-        for line in f:
-            if line.startswith("#"):
-                continue
-            parts = line.strip().split()
-            radius = float(parts[4])
-            void_id = int(parts[7])
-            density_contrast = float(parts[8])
-            centers_data.append([void_id, density_contrast, radius])
-    centers_df = pd.DataFrame(centers_data, columns=["void_id", "density_contrast", "radius"])
-    merged_df = pd.merge(centers_df, shapes_df, on="void_id", how="inner")
-    output_csv = Path(f"/Users/vignesh/Documents/VoidData/simulation_{simulation}_voids.csv")
-    merged_df.to_csv(output_csv, index=False)
-    print(f"Merged CSV saved: {output_csv}")
-    print(merged_df.head())
-
-new to-dos
-    1) download all 2000 simulations from the void data
-    2) have a mean column for each property (3 properties, 3 means)
-       - the mean will be between the min and max of the property
-       - look at recording for how to do this
-       - this mean should be unique to each simulation, not the same using the 2000 like the 3rd to-do says
-    3) the bins should be based on the data pulled from all 2000 simulations, not just the 0th, 1st, etc. simulation
-'''
+print("\n" + "=" * 60)
+print("Extraction Summary")
+print("=" * 60)
+print(f"Successful: {successful}")
+print(f"Failed: {failed}")
+print(f"Total processed: {successful + failed}")
+print(f"Output files saved to: {OUTPUT_DIR}")
+print("=" * 60)

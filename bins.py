@@ -2,7 +2,8 @@ import pandas as pd
 from pathlib import Path
 import numpy as np
 
-input_csv = Path("/Users/vignesh/Documents/VoidData/simulation_1_voids.csv")
+simulation_num = 1  # Change this to process different simulations
+input_csv = Path(f"/Users/vignesh/Documents/VoidData/ExcelData/simulation_{simulation_num}_voids.csv")
 df = pd.read_csv(input_csv)
 
 num_bins = 18
@@ -43,10 +44,12 @@ histogram_df = pd.DataFrame({
 })
 
 # Save histogram data with index (bin numbers 0-17)
-output_csv = Path("/Users/vignesh/Documents/VoidData/simulation_1_histograms.csv")
+output_dir = Path("/Users/vignesh/Documents/VoidData/BinnedData")
+output_dir.mkdir(parents=True, exist_ok=True)  # Create directory if it doesn't exist
+output_csv = output_dir / f"simulation_{simulation_num}_binned.csv"
 histogram_df.to_csv(output_csv, index=True)
 
-print(f"Histogram data saved: {output_csv}")
+print(f"Binned data saved: {output_csv}")
 print(f"\nHistogram shape: {histogram_df.shape}")
 print(f"\nFirst few rows:")
 print(histogram_df.head())
