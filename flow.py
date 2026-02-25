@@ -1,0 +1,305 @@
+import torch
+import pyro
+import pyro.distributions as dist
+import pyro.distributions.transforms as T
+import matplotlib.pyplot as plt
+import seaborn as sns
+import numpy as np
+from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import r2_score, mean_squared_error
+import pandas as pd
+import os
+import sys
+import time
+
+# ─── CONFIGURATION ──────────────────────────────────────────────────────────────
+
+BINNED_DATA_DIR = "/Users/vignesh/Documents/VoidData/BinnedData"
+PARAM_FILE = "/Users/vignesh/Documents/VSCodeFiles/VoidProperties/latin_hypercube_params.txt"
+CHECKPOINT_DIR = "/Users/vignesh/Documents/VSCodeFiles/VoidProperties/checkpoints"
+
+NUM_BINS = 18
+NUM_SIMS = 2000
+PROPERTIES = ["densitycontrast", "radius", "ellipticity"]
+PARAM_NAMES = ["Omega_m", "Omega_b", "h", "n_s", "sigma_8"]
+NUM_PARAMS = len(PARAM_NAMES)
+
+# MODE: "densitycontrast" | "radius" | "ellipticity" | "combined"
+MODE = "combined"
+
+STEPS = 750 # og 200
+LEARNING_RATE = 1e-3 # og 0.00928
+N_CONTEXT_LAYERS = 1 # og 1
+N_CONDITIONAL_LAYERS = 3 # og 5
+SEED = 42
+N_POSTERIOR_SAMPLES = 1000
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+# ─── DATA LOADING ────────────────────────────────────────────────────────────────
+
+def discover_simulations(data_dir, num_sims):
+    """Return sorted list of simulation indices that have binned data on disk."""
+    available = []
+    for i in range(num_sims):
+        if os.path.exists(os.path.join(data_dir, f"simulation_{i}_binned.csv")):
+            available.append(i)
+    return available
+
+
+def load_binned_data(data_dir, sim_indices, mode):
+    """Load histogram vectors for each simulation.
+
+    For single-property modes the vector is length NUM_BINS (18).
+    For "combined" mode the vector is densitycontrast|radius|ellipticity (54).
+    """
+    rows = []
+    for idx in sim_indices:
+        df = pd.read_csv(
+            os.path.join(data_dir, f"simulation_{idx}_binned.csv"), index_col=0
+        )
+        if mode == "combined":
+            vec = np.concatenate([df[p].values for p in PROPERTIES])
+        else:
+            vec = df[mode].values
+        rows.append(vec)
+    return np.array(rows)
+
+
+def load_params(param_file, sim_indices):
+    """Load cosmological parameters for the given simulation indices."""
+    all_params = np.loadtxt(param_file)
+    return all_params[sim_indices]
+
+
+# ─── MODEL ───────────────────────────────────────────────────────────────────────
+
+def create_cond_dist(target_dim, context_dim, n_context_layers, n_cond_layers):
+    """Build the conditional spline normalizing flow."""
+    base_ctx = dist.Normal(torch.zeros(context_dim), torch.ones(context_dim))
+    ctx_transforms = [T.spline_autoregressive(context_dim) for _ in range(n_context_layers)]
+    dist_x1 = dist.TransformedDistribution(base_ctx, ctx_transforms)
+
+    base_tgt = dist.Normal(torch.zeros(target_dim), torch.ones(target_dim))
+    cond_transforms = [
+        T.conditional_spline_autoregressive(target_dim, context_dim=context_dim, bound=5)
+        for _ in range(n_cond_layers)
+    ]
+    dist_x2_given_x1 = dist.ConditionalTransformedDistribution(base_tgt, cond_transforms)
+
+    return dist_x1, dist_x2_given_x1, ctx_transforms, cond_transforms
+
+
+# ─── DATA SPLITTING ──────────────────────────────────────────────────────────────
+
+def prepare_dataset(X, Y, seed=42):
+    """70 / 15 / 15 train / valid / test split, deterministic."""
+    X_t = torch.tensor(X, dtype=torch.float)
+    Y_t = torch.tensor(Y, dtype=torch.float)
+    n = X.shape[0]
+    n_train = int(n * 0.7)
+    n_valid = int(n * 0.15)
+    n_test = n - n_train - n_valid
+
+    gen = torch.Generator().manual_seed(seed)
+    x_splits = torch.utils.data.random_split(X_t, [n_train, n_valid, n_test], generator=gen)
+    gen = torch.Generator().manual_seed(seed)
+    y_splits = torch.utils.data.random_split(Y_t, [n_train, n_valid, n_test], generator=gen)
+
+    x_train, x_valid, x_test = [torch.stack(list(s)) for s in x_splits]
+    y_train, y_valid, y_test = [torch.stack(list(s)) for s in y_splits]
+    return x_train, x_valid, x_test, y_train, y_valid, y_test
+
+
+# ─── TRAINING ────────────────────────────────────────────────────────────────────
+
+def train_flow(dist_x1, dist_x2_given_x1, transforms, x_train, y_train,
+               steps, lr, x_valid=None, y_valid=None):
+    modules = torch.nn.ModuleList(transforms)
+    optimizer = torch.optim.Adam(modules.parameters(), lr=lr)
+
+    train_losses, valid_losses = [], []
+
+    for step in range(steps):
+        optimizer.zero_grad()
+        ln_p_x1 = dist_x1.log_prob(x_train)
+        ln_p_x2 = dist_x2_given_x1.condition(x_train.detach()).log_prob(y_train.detach())
+        loss = -(ln_p_x1 + ln_p_x2).mean()
+        loss.backward()
+        optimizer.step()
+        dist_x1.clear_cache()
+        dist_x2_given_x1.clear_cache()
+        train_losses.append(loss.item())
+
+        if x_valid is not None:
+            with torch.no_grad():
+                vl1 = dist_x1.log_prob(x_valid)
+                vl2 = dist_x2_given_x1.condition(x_valid).log_prob(y_valid)
+                valid_losses.append(-(vl1 + vl2).mean().item())
+                dist_x1.clear_cache()
+                dist_x2_given_x1.clear_cache()
+
+        if step % 10 == 0:
+            msg = f"  step {step:4d} | train loss: {loss.item():.4f}"
+            if valid_losses:
+                msg += f" | valid loss: {valid_losses[-1]:.4f}"
+            print(msg)
+
+    return train_losses, valid_losses
+
+
+# ─── EVALUATION ──────────────────────────────────────────────────────────────────
+
+def evaluate(dist_x2_given_x1, x_test, y_test, y_scaler,
+             n_samples=1000, save_dir=None, mode_label=""):
+    """Sample posteriors for every test simulation and compare to truth."""
+    results = []
+    for i in range(x_test.shape[0]):
+        samples = dist_x2_given_x1.condition(x_test[i]).sample(torch.Size([n_samples]))
+        samples_np = y_scaler.inverse_transform(samples.detach().numpy())
+        row = []
+        for j in range(NUM_PARAMS):
+            row.append(samples_np[:, j].mean())
+            row.append(samples_np[:, j].std())
+        results.append(row)
+
+    results = np.array(results)
+    y_test_np = y_scaler.inverse_transform(y_test.detach().numpy())
+
+    n_show = min(100, x_test.shape[0])
+    idxs = np.random.choice(x_test.shape[0], n_show, replace=False)
+
+    for i, pname in enumerate(PARAM_NAMES):
+        true_vals = y_test_np[idxs, i]
+        pred_means = results[idxs, 2 * i]
+        pred_stds = results[idxs, 2 * i + 1]
+
+        plt.figure(figsize=(6, 5))
+        plt.errorbar(true_vals, pred_means, yerr=pred_stds, fmt='o',
+                     label='Predicted ± std')
+        lims = np.linspace(true_vals.min(), true_vals.max(), 100)
+        plt.plot(lims, lims, color='orange', label='Ideal: Pred = True')
+        plt.xlabel("True")
+        plt.ylabel("Predicted")
+        plt.title(f"{pname} — {mode_label}")
+        plt.grid(True)
+        plt.legend()
+        plt.tight_layout()
+        if save_dir:
+            plt.savefig(os.path.join(save_dir, f"eval_{mode_label}_{pname}.png"), dpi=150)
+        plt.show()
+
+        r2 = r2_score(true_vals, pred_means)
+        rmse = np.sqrt(mean_squared_error(true_vals, pred_means))
+        chi2 = np.mean(((true_vals - pred_means) ** 2) / (pred_stds ** 2))
+        mmre = np.mean(np.abs((true_vals - pred_means) / true_vals))
+
+        print(f"  {pname}:")
+        print(f"    R²:    {r2:.4f}")
+        print(f"    RMSE:  {rmse:.4e}")
+        print(f"    χ²:    {chi2:.4f}")
+        print(f"    MMRE:  {mmre:.4%}")
+        print(f"    {'─' * 36}")
+
+    return results
+
+
+# ─── CHECKPOINTING ───────────────────────────────────────────────────────────────
+
+def save_checkpoint(transforms, path):
+    modules = torch.nn.ModuleList(transforms)
+    torch.save(modules.state_dict(), path)
+    print(f"  Checkpoint saved → {path}")
+
+
+def load_checkpoint(transforms, path):
+    modules = torch.nn.ModuleList(transforms)
+    modules.load_state_dict(torch.load(path, weights_only=True))
+    print(f"  Checkpoint loaded ← {path}")
+    return modules
+
+
+# ─── RUN ONE MODE ────────────────────────────────────────────────────────────────
+
+def run(mode):
+    print(f"\n{'=' * 60}")
+    print(f"  MODE: {mode}")
+    print(f"{'=' * 60}")
+
+    input_dim = NUM_BINS * len(PROPERTIES) if mode == "combined" else NUM_BINS
+
+    # --- data ---
+    sim_indices = discover_simulations(BINNED_DATA_DIR, NUM_SIMS)
+    print(f"  Simulations found: {len(sim_indices)}")
+
+    X = load_binned_data(BINNED_DATA_DIR, sim_indices, mode)
+    Y = load_params(PARAM_FILE, sim_indices)
+    print(f"  X shape: {X.shape}  |  Y shape: {Y.shape}")
+
+    x_scaler = StandardScaler()
+    X = x_scaler.fit_transform(X)
+    y_scaler = StandardScaler()
+    Y = y_scaler.fit_transform(Y)
+
+    x_train, x_valid, x_test, y_train, y_valid, y_test = prepare_dataset(X, Y, SEED)
+    print(f"  Train: {x_train.shape[0]}  Valid: {x_valid.shape[0]}  Test: {x_test.shape[0]}")
+
+    # --- model ---
+    dist_x1, dist_x2_given_x1, ctx_tf, cond_tf = create_cond_dist(
+        NUM_PARAMS, input_dim, N_CONTEXT_LAYERS, N_CONDITIONAL_LAYERS
+    )
+    all_transforms = ctx_tf + cond_tf
+
+    # --- train ---
+    t0 = time.time()
+    train_losses, valid_losses = train_flow(
+        dist_x1, dist_x2_given_x1, all_transforms,
+        x_train, y_train, STEPS, LEARNING_RATE, x_valid, y_valid
+    )
+    elapsed = time.time() - t0
+    print(f"  Training completed in {elapsed:.1f}s")
+
+    # --- loss curves ---
+    plt.figure(figsize=(8, 4))
+    plt.plot(train_losses, label="Train")
+    if valid_losses:
+        plt.plot(valid_losses, label="Validation")
+    plt.xlabel("Step")
+    plt.ylabel("Loss")
+    plt.title(f"Loss Curve — {mode}")
+    plt.legend()
+    plt.grid(True)
+    plt.tight_layout()
+    mode_dir = os.path.join(CHECKPOINT_DIR, mode)
+    os.makedirs(mode_dir, exist_ok=True)
+    plt.savefig(os.path.join(mode_dir, f"loss_{mode}.png"), dpi=150)
+    plt.show()
+
+    # --- checkpoint ---
+    save_checkpoint(all_transforms, os.path.join(mode_dir, f"flow_{mode}.pt"))
+
+    # --- evaluate ---
+    print(f"\n  Evaluation on test set ({x_test.shape[0]} simulations):")
+    evaluate(
+        dist_x2_given_x1, x_test, y_test, y_scaler,
+        n_samples=N_POSTERIOR_SAMPLES, save_dir=mode_dir, mode_label=mode
+    )
+
+    return dist_x1, dist_x2_given_x1, all_transforms, y_scaler
+
+
+# ─── ENTRY POINT ─────────────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    # Pass mode(s) as CLI args, or fall back to the MODE constant above.
+    #   python flow.py densitycontrast
+    #   python flow.py densitycontrast radius ellipticity combined
+    #   python flow.py                          # uses MODE default
+    VALID_MODES = PROPERTIES + ["combined"]
+
+    modes = sys.argv[1:] if len(sys.argv) > 1 else [MODE]
+    for m in modes:
+        if m not in VALID_MODES:
+            sys.exit(f"Invalid mode '{m}'. Choose from: {VALID_MODES}")
+        run(m)

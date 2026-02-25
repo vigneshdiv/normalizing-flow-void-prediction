@@ -100,3 +100,17 @@ print(f"Failed: {failed}")
 print(f"Total processed: {successful + failed}")
 print(f"Output files saved to: {OUTPUT_DIR}")
 print("=" * 60)
+
+"""
+- previously we just did density contrast
+- read over the normalizing flow model article bonny sent me previously
+
+to dos:
+    - test my dc vs the old dc for a sanity check using the model
+    - then check ellipticity results using the model
+    - then check radius results using the model
+    - then check all three results using the model
+        - should have the tightest spread
+    - for the parameters sheet, every binned void simulation matches up with the row of the simulation in the parameters sheet
+        - but since i am missing simulation 1897, i need to ignore that row in the parameters sheet
+"""

@@ -2,60 +2,101 @@ import pandas as pd
 from pathlib import Path
 import numpy as np
 
-simulation_num = 1  # Change this to process different simulations
-input_csv = Path(f"/Users/vignesh/Documents/VoidData/ExcelData/simulation_{simulation_num}_voids.csv")
-df = pd.read_csv(input_csv)
+# cursor may be thinking only to use the dc, rad, and ellip of the 0th sim
+# might need to change this fully to print out all sims instead of just 0th for testing
 
 num_bins = 18
 
-# Create bin edges for each property using numpy linspace
-dc_bins = np.linspace(df['density_contrast'].min(), df['density_contrast'].max(), num_bins + 1)
-rad_bins = np.linspace(df['radius'].min(), df['radius'].max(), num_bins + 1)
-ellip_bins = np.linspace(df['ellipticity'].min(), df['ellipticity'].max(), num_bins + 1)
+# Compute global min/max across all simulations for each property
+data_dir = Path("/Users/vignesh/Documents/VoidData/ExcelData")
+start_sim = 0
+end_sim = 1999
+skip_sims = {1897}
 
-# Use pd.cut to bin the data and get normalized frequencies (probabilities that sum to 1)
-dc_cut = pd.cut(df['density_contrast'], bins=dc_bins, include_lowest=True, labels=False, duplicates='drop')
-dc_counts = dc_cut.value_counts(normalize=True).sort_index()
-dc_hist = np.zeros(num_bins)
-for idx, val in dc_counts.items():
-    if 0 <= idx < num_bins:
-        dc_hist[int(idx)] = val
+# Percentile clipping to remove extreme tails
+clip_lo = 0.5
+clip_hi = 99.5
 
-rad_cut = pd.cut(df['radius'], bins=rad_bins, include_lowest=True, labels=False, duplicates='drop')
-rad_counts = rad_cut.value_counts(normalize=True).sort_index()
-rad_hist = np.zeros(num_bins)
-for idx, val in rad_counts.items():
-    if 0 <= idx < num_bins:
-        rad_hist[int(idx)] = val
+all_density = []
+all_radius = []
+all_ellipticity = []
 
-ellip_cut = pd.cut(df['ellipticity'], bins=ellip_bins, include_lowest=True, labels=False, duplicates='drop')
-ellip_counts = ellip_cut.value_counts(normalize=True).sort_index()
-ellip_hist = np.zeros(num_bins)
-for idx, val in ellip_counts.items():
-    if 0 <= idx < num_bins:
-        ellip_hist[int(idx)] = val
+for sim in range(start_sim, end_sim + 1):
+    if sim in skip_sims:
+        continue
+    sim_file = data_dir / f"simulation_{sim}_voids.csv"
+    if not sim_file.exists():
+        continue
+    df_sim = pd.read_csv(sim_file, usecols=["density_contrast", "radius", "ellipticity"])
+    all_density.append(df_sim["density_contrast"].to_numpy())
+    all_radius.append(df_sim["radius"].to_numpy())
+    all_ellipticity.append(df_sim["ellipticity"].to_numpy())
 
-# Create DataFrame with histogram data for normalizing flow model
-# Format: one row per bin (0-17) with densitycontrast, radius, and ellipticity columns
-histogram_df = pd.DataFrame({
-    'densitycontrast': dc_hist,
-    'radius': rad_hist,
-    'ellipticity': ellip_hist
-})
+all_density = np.concatenate(all_density) if all_density else np.array([])
+all_radius = np.concatenate(all_radius) if all_radius else np.array([])
+all_ellipticity = np.concatenate(all_ellipticity) if all_ellipticity else np.array([])
+
+global_min = {
+    "density_contrast": np.percentile(all_density, clip_lo) if all_density.size else None,
+    "radius": np.percentile(all_radius, clip_lo) if all_radius.size else None,
+    "ellipticity": np.percentile(all_ellipticity, clip_lo) if all_ellipticity.size else None,
+}
+global_max = {
+    "density_contrast": np.percentile(all_density, clip_hi) if all_density.size else None,
+    "radius": np.percentile(all_radius, clip_hi) if all_radius.size else None,
+    "ellipticity": np.percentile(all_ellipticity, clip_hi) if all_ellipticity.size else None,
+}
+
+print("Global min/max values (after percentile clipping):")
+for col in global_min.keys():
+    print(f"  {col}: min={global_min[col]}, max={global_max[col]}")
+
+# Create bin edges for each property using global min/max
+dc_bins = np.linspace(global_min["density_contrast"], global_max["density_contrast"], num_bins + 1)
+rad_bins = np.linspace(global_min["radius"], global_max["radius"], num_bins + 1)
+ellip_bins = np.linspace(global_min["ellipticity"], global_max["ellipticity"], num_bins + 1)
 
 # Save histogram data with index (bin numbers 0-17)
 output_dir = Path("/Users/vignesh/Documents/VoidData/BinnedData")
 output_dir.mkdir(parents=True, exist_ok=True)  # Create directory if it doesn't exist
-output_csv = output_dir / f"simulation_{simulation_num}_binned.csv"
-histogram_df.to_csv(output_csv, index=True)
 
-print(f"Binned data saved: {output_csv}")
-print(f"\nHistogram shape: {histogram_df.shape}")
-print(f"\nFirst few rows:")
-print(histogram_df.head())
-print(f"\nHistogram statistics:")
-print(histogram_df[['densitycontrast', 'radius', 'ellipticity']].describe())
+start_sim = 2
+end_sim = 1999
+processed = 0
+skipped = 0
 
-print(f"\nCSV with bins saved: {output_csv}")
-print("\nHistogram DataFrame:")
-print(histogram_df)
+for sim in range(start_sim, end_sim + 1):
+    if sim in skip_sims:
+        skipped += 1
+        continue
+    sim_file = data_dir / f"simulation_{sim}_voids.csv"
+    if not sim_file.exists():
+        skipped += 1
+        continue
+
+    df_sim = pd.read_csv(sim_file, usecols=["density_contrast", "radius", "ellipticity"])
+
+    # Use np.histogram with fixed global bin edges
+    dc_counts, _ = np.histogram(df_sim["density_contrast"], bins=dc_bins, density=False)
+    rad_counts, _ = np.histogram(df_sim["radius"], bins=rad_bins, density=False)
+    ellip_counts, _ = np.histogram(df_sim["ellipticity"], bins=ellip_bins, density=False)
+
+    # Normalize to probability distributions
+    dc_hist = dc_counts / dc_counts.sum() if dc_counts.sum() > 0 else np.zeros(num_bins)
+    rad_hist = rad_counts / rad_counts.sum() if rad_counts.sum() > 0 else np.zeros(num_bins)
+    ellip_hist = ellip_counts / ellip_counts.sum() if ellip_counts.sum() > 0 else np.zeros(num_bins)
+
+    # Create DataFrame with histogram data for normalizing flow model
+    # Format: one row per bin (0-17) with densitycontrast, radius, and ellipticity columns
+    histogram_df = pd.DataFrame({
+        "densitycontrast": dc_hist,
+        "radius": rad_hist,
+        "ellipticity": ellip_hist
+    })
+
+    output_csv = output_dir / f"simulation_{sim}_binned.csv"
+    histogram_df.to_csv(output_csv, index=True)
+    processed += 1
+
+print(f"\nBinned files created: {processed}")
+print(f"Skipped simulations: {skipped}")
