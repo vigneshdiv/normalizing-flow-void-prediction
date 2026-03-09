@@ -12,8 +12,6 @@ import os
 import sys
 import time
 
-# ─── CONFIGURATION ──────────────────────────────────────────────────────────────
-
 BINNED_DATA_DIR = "/Users/vignesh/Documents/VoidData/BinnedData"
 PARAM_FILE = "/Users/vignesh/Documents/VSCodeFiles/VoidProperties/latin_hypercube_params.txt"
 CHECKPOINT_DIR = "/Users/vignesh/Documents/VSCodeFiles/VoidProperties/checkpoints"
@@ -24,20 +22,20 @@ PROPERTIES = ["densitycontrast", "radius", "ellipticity"]
 PARAM_NAMES = ["Omega_m", "Omega_b", "h", "n_s", "sigma_8"]
 NUM_PARAMS = len(PARAM_NAMES)
 
-# MODE: "densitycontrast" | "radius" | "ellipticity" | "combined"
+# "densitycontrast", "radius", "ellipticity", "combined"
 MODE = "combined"
 
-STEPS = 750 # og 200
-LEARNING_RATE = 1e-3 # og 0.00928
-N_CONTEXT_LAYERS = 1 # og 1
-N_CONDITIONAL_LAYERS = 3 # og 5
+STEPS = 1000  # upper bound; early stopping will halt before this if validation plateaus
+LEARNING_RATE = 1e-3
+N_CONTEXT_LAYERS = 1
+N_CONDITIONAL_LAYERS = 3
 SEED = 42
 N_POSTERIOR_SAMPLES = 1000
+PATIENCE = 50  # stop training if validation loss hasn't improved for this many steps
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-
-# ─── DATA LOADING ────────────────────────────────────────────────────────────────
+# data loading
 
 def discover_simulations(data_dir, num_sims):
     """Return sorted list of simulation indices that have binned data on disk."""
@@ -73,7 +71,7 @@ def load_params(param_file, sim_indices):
     return all_params[sim_indices]
 
 
-# ─── MODEL ───────────────────────────────────────────────────────────────────────
+# model
 
 def create_cond_dist(target_dim, context_dim, n_context_layers, n_cond_layers):
     """Build the conditional spline normalizing flow."""
@@ -91,7 +89,7 @@ def create_cond_dist(target_dim, context_dim, n_context_layers, n_cond_layers):
     return dist_x1, dist_x2_given_x1, ctx_transforms, cond_transforms
 
 
-# ─── DATA SPLITTING ──────────────────────────────────────────────────────────────
+# data splitting
 
 def prepare_dataset(X, Y, seed=42):
     """70 / 15 / 15 train / valid / test split, deterministic."""
@@ -112,14 +110,18 @@ def prepare_dataset(X, Y, seed=42):
     return x_train, x_valid, x_test, y_train, y_valid, y_test
 
 
-# ─── TRAINING ────────────────────────────────────────────────────────────────────
+# training
 
 def train_flow(dist_x1, dist_x2_given_x1, transforms, x_train, y_train,
-               steps, lr, x_valid=None, y_valid=None):
+               steps, lr, x_valid=None, y_valid=None, patience=None):
     modules = torch.nn.ModuleList(transforms)
     optimizer = torch.optim.Adam(modules.parameters(), lr=lr)
 
     train_losses, valid_losses = [], []
+    best_valid_loss = float("inf")
+    best_step = 0
+    best_state = None
+    steps_without_improvement = 0
 
     for step in range(steps):
         optimizer.zero_grad()
@@ -136,9 +138,23 @@ def train_flow(dist_x1, dist_x2_given_x1, transforms, x_train, y_train,
             with torch.no_grad():
                 vl1 = dist_x1.log_prob(x_valid)
                 vl2 = dist_x2_given_x1.condition(x_valid).log_prob(y_valid)
-                valid_losses.append(-(vl1 + vl2).mean().item())
+                vloss = -(vl1 + vl2).mean().item()
+                valid_losses.append(vloss)
                 dist_x1.clear_cache()
                 dist_x2_given_x1.clear_cache()
+
+            if vloss < best_valid_loss:
+                best_valid_loss = vloss
+                best_step = step
+                best_state = {k: v.clone() for k, v in modules.state_dict().items()}
+                steps_without_improvement = 0
+            else:
+                steps_without_improvement += 1
+
+            if patience is not None and steps_without_improvement >= patience:
+                print(f"  Early stopping at step {step} "
+                      f"(no improvement for {patience} steps)")
+                break
 
         if step % 10 == 0:
             msg = f"  step {step:4d} | train loss: {loss.item():.4f}"
@@ -146,10 +162,15 @@ def train_flow(dist_x1, dist_x2_given_x1, transforms, x_train, y_train,
                 msg += f" | valid loss: {valid_losses[-1]:.4f}"
             print(msg)
 
+    if best_state is not None:
+        modules.load_state_dict(best_state)
+        print(f"  Restored best model from step {best_step} "
+              f"(valid loss: {best_valid_loss:.4f})")
+
     return train_losses, valid_losses
 
 
-# ─── EVALUATION ──────────────────────────────────────────────────────────────────
+# evaluation
 
 def evaluate(dist_x2_given_x1, x_test, y_test, y_scaler,
              n_samples=1000, save_dir=None, mode_label=""):
@@ -205,7 +226,7 @@ def evaluate(dist_x2_given_x1, x_test, y_test, y_scaler,
     return results
 
 
-# ─── CHECKPOINTING ───────────────────────────────────────────────────────────────
+# checkpointing
 
 def save_checkpoint(transforms, path):
     modules = torch.nn.ModuleList(transforms)
@@ -220,7 +241,7 @@ def load_checkpoint(transforms, path):
     return modules
 
 
-# ─── RUN ONE MODE ────────────────────────────────────────────────────────────────
+# run one mode
 
 def run(mode):
     print(f"\n{'=' * 60}")
@@ -229,7 +250,6 @@ def run(mode):
 
     input_dim = NUM_BINS * len(PROPERTIES) if mode == "combined" else NUM_BINS
 
-    # --- data ---
     sim_indices = discover_simulations(BINNED_DATA_DIR, NUM_SIMS)
     print(f"  Simulations found: {len(sim_indices)}")
 
@@ -245,26 +265,29 @@ def run(mode):
     x_train, x_valid, x_test, y_train, y_valid, y_test = prepare_dataset(X, Y, SEED)
     print(f"  Train: {x_train.shape[0]}  Valid: {x_valid.shape[0]}  Test: {x_test.shape[0]}")
 
-    # --- model ---
     dist_x1, dist_x2_given_x1, ctx_tf, cond_tf = create_cond_dist(
         NUM_PARAMS, input_dim, N_CONTEXT_LAYERS, N_CONDITIONAL_LAYERS
     )
     all_transforms = ctx_tf + cond_tf
 
-    # --- train ---
+    # train
     t0 = time.time()
     train_losses, valid_losses = train_flow(
         dist_x1, dist_x2_given_x1, all_transforms,
-        x_train, y_train, STEPS, LEARNING_RATE, x_valid, y_valid
+        x_train, y_train, STEPS, LEARNING_RATE, x_valid, y_valid,
+        patience=PATIENCE
     )
     elapsed = time.time() - t0
     print(f"  Training completed in {elapsed:.1f}s")
 
-    # --- loss curves ---
+    # loss curves
     plt.figure(figsize=(8, 4))
     plt.plot(train_losses, label="Train")
     if valid_losses:
         plt.plot(valid_losses, label="Validation")
+        best_idx = int(np.argmin(valid_losses))
+        plt.axvline(best_idx, color="gray", linestyle="--", alpha=0.7,
+                     label=f"Best valid (step {best_idx})")
     plt.xlabel("Step")
     plt.ylabel("Loss")
     plt.title(f"Loss Curve — {mode}")
@@ -276,10 +299,10 @@ def run(mode):
     plt.savefig(os.path.join(mode_dir, f"loss_{mode}.png"), dpi=150)
     plt.show()
 
-    # --- checkpoint ---
+    # checkpoint
     save_checkpoint(all_transforms, os.path.join(mode_dir, f"flow_{mode}.pt"))
 
-    # --- evaluate ---
+    # evaluate
     print(f"\n  Evaluation on test set ({x_test.shape[0]} simulations):")
     evaluate(
         dist_x2_given_x1, x_test, y_test, y_scaler,
@@ -289,15 +312,10 @@ def run(mode):
     return dist_x1, dist_x2_given_x1, all_transforms, y_scaler
 
 
-# ─── ENTRY POINT ─────────────────────────────────────────────────────────────────
+# entry point
 
 if __name__ == "__main__":
-    # Pass mode(s) as CLI args, or fall back to the MODE constant above.
-    #   python flow.py densitycontrast
-    #   python flow.py densitycontrast radius ellipticity combined
-    #   python flow.py                          # uses MODE default
     VALID_MODES = PROPERTIES + ["combined"]
-
     modes = sys.argv[1:] if len(sys.argv) > 1 else [MODE]
     for m in modes:
         if m not in VALID_MODES:
