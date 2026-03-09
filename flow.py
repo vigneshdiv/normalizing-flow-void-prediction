@@ -25,7 +25,7 @@ NUM_PARAMS = len(PARAM_NAMES)
 # "densitycontrast", "radius", "ellipticity", "combined"
 MODE = "combined"
 
-STEPS = 1000  # upper bound; early stopping will halt before this if validation plateaus
+STEPS = 1000  # upper bound
 LEARNING_RATE = 7e-4
 N_CONTEXT_LAYERS = 1
 N_CONDITIONAL_LAYERS = 4
