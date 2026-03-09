@@ -26,10 +26,10 @@ NUM_PARAMS = len(PARAM_NAMES)
 MODE = "combined"
 
 STEPS = 1000  # upper bound; early stopping will halt before this if validation plateaus
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 7e-4
 N_CONTEXT_LAYERS = 1
-N_CONDITIONAL_LAYERS = 3
-SEED = 42
+N_CONDITIONAL_LAYERS = 4
+SEED = 45
 N_POSTERIOR_SAMPLES = 1000
 PATIENCE = 50  # stop training if validation loss hasn't improved for this many steps
 
@@ -191,6 +191,7 @@ def evaluate(dist_x2_given_x1, x_test, y_test, y_scaler,
     n_show = min(100, x_test.shape[0])
     idxs = np.random.choice(x_test.shape[0], n_show, replace=False)
 
+    metrics_rows = []
     for i, pname in enumerate(PARAM_NAMES):
         true_vals = y_test_np[idxs, i]
         pred_means = results[idxs, 2 * i]
@@ -216,6 +217,14 @@ def evaluate(dist_x2_given_x1, x_test, y_test, y_scaler,
         chi2 = np.mean(((true_vals - pred_means) ** 2) / (pred_stds ** 2))
         mmre = np.mean(np.abs((true_vals - pred_means) / true_vals))
 
+        metrics_rows.append({
+            "parameter": pname,
+            "R2": r2,
+            "RMSE": rmse,
+            "chi_squared": chi2,
+            "MMRE": mmre,
+        })
+
         print(f"  {pname}:")
         print(f"    R²:    {r2:.4f}")
         print(f"    RMSE:  {rmse:.4e}")
@@ -223,7 +232,13 @@ def evaluate(dist_x2_given_x1, x_test, y_test, y_scaler,
         print(f"    MMRE:  {mmre:.4%}")
         print(f"    {'─' * 36}")
 
-    return results
+    metrics_df = pd.DataFrame(metrics_rows)
+    if save_dir:
+        metrics_path = os.path.join(save_dir, f"metrics_{mode_label}.csv")
+        metrics_df.to_csv(metrics_path, index=False)
+        print(f"  Metrics saved → {metrics_path}")
+
+    return results, metrics_df
 
 
 # checkpointing
@@ -304,7 +319,7 @@ def run(mode):
 
     # evaluate
     print(f"\n  Evaluation on test set ({x_test.shape[0]} simulations):")
-    evaluate(
+    _, metrics_df = evaluate(
         dist_x2_given_x1, x_test, y_test, y_scaler,
         n_samples=N_POSTERIOR_SAMPLES, save_dir=mode_dir, mode_label=mode
     )
