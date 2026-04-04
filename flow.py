@@ -13,8 +13,8 @@ import sys
 import time
 
 BINNED_DATA_DIR = "/Users/vignesh/Documents/VoidData/BinnedData"
-PARAM_FILE = "/Users/vignesh/Documents/VSCodeFiles/VoidProperties/latin_hypercube_params.txt"
-CHECKPOINT_DIR = "/Users/vignesh/Documents/VSCodeFiles/VoidProperties/checkpoints"
+PARAM_FILE = "/Users/vignesh/Documents/VSCodeFiles/NormalizingFlowVoids/latin_hypercube_params.txt"
+CHECKPOINT_DIR = "/Users/vignesh/Documents/VSCodeFiles/NormalizingFlowVoids/checkpoints"
 
 NUM_BINS = 18
 NUM_SIMS = 2000
