@@ -27,7 +27,6 @@ MODE = "combined"
 
 STEPS = 1000  # upper bound
 LEARNING_RATE = 7e-4
-N_CONTEXT_LAYERS = 1
 N_CONDITIONAL_LAYERS = 4
 SEED = 45
 N_POSTERIOR_SAMPLES = 1000
@@ -73,12 +72,8 @@ def load_params(param_file, sim_indices):
 
 # model
 
-def create_cond_dist(target_dim, context_dim, n_context_layers, n_cond_layers):
-    """Build the conditional spline normalizing flow."""
-    base_ctx = dist.Normal(torch.zeros(context_dim), torch.ones(context_dim))
-    ctx_transforms = [T.spline_autoregressive(context_dim) for _ in range(n_context_layers)]
-    dist_x1 = dist.TransformedDistribution(base_ctx, ctx_transforms)
-
+def create_cond_dist(target_dim, context_dim, n_cond_layers):
+    """Build the conditional spline normalizing flow for p(theta | x)."""
     base_tgt = dist.Normal(torch.zeros(target_dim), torch.ones(target_dim))
     cond_transforms = [
         T.conditional_spline_autoregressive(target_dim, context_dim=context_dim, bound=5)
@@ -86,7 +81,7 @@ def create_cond_dist(target_dim, context_dim, n_context_layers, n_cond_layers):
     ]
     dist_x2_given_x1 = dist.ConditionalTransformedDistribution(base_tgt, cond_transforms)
 
-    return dist_x1, dist_x2_given_x1, ctx_transforms, cond_transforms
+    return dist_x2_given_x1, cond_transforms
 
 
 # data splitting
@@ -112,7 +107,7 @@ def prepare_dataset(X, Y, seed=42):
 
 # training
 
-def train_flow(dist_x1, dist_x2_given_x1, transforms, x_train, y_train,
+def train_flow(dist_x2_given_x1, transforms, x_train, y_train,
                steps, lr, x_valid=None, y_valid=None, patience=None):
     modules = torch.nn.ModuleList(transforms)
     optimizer = torch.optim.Adam(modules.parameters(), lr=lr)
@@ -125,22 +120,18 @@ def train_flow(dist_x1, dist_x2_given_x1, transforms, x_train, y_train,
 
     for step in range(steps):
         optimizer.zero_grad()
-        ln_p_x1 = dist_x1.log_prob(x_train)
         ln_p_x2 = dist_x2_given_x1.condition(x_train.detach()).log_prob(y_train.detach())
-        loss = -(ln_p_x1 + ln_p_x2).mean()
+        loss = -ln_p_x2.mean()
         loss.backward()
         optimizer.step()
-        dist_x1.clear_cache()
         dist_x2_given_x1.clear_cache()
         train_losses.append(loss.item())
 
         if x_valid is not None:
             with torch.no_grad():
-                vl1 = dist_x1.log_prob(x_valid)
                 vl2 = dist_x2_given_x1.condition(x_valid).log_prob(y_valid)
-                vloss = -(vl1 + vl2).mean().item()
+                vloss = -vl2.mean().item()
                 valid_losses.append(vloss)
-                dist_x1.clear_cache()
                 dist_x2_given_x1.clear_cache()
 
             if vloss < best_valid_loss:
@@ -166,6 +157,10 @@ def train_flow(dist_x1, dist_x2_given_x1, transforms, x_train, y_train,
         modules.load_state_dict(best_state)
         print(f"  Restored best model from step {best_step} "
               f"(valid loss: {best_valid_loss:.4f})")
+
+    if valid_losses:
+        print(f"  Train/valid gap at step {best_step}: "
+              f"{valid_losses[best_step] - train_losses[best_step]:+.4f} nats")
 
     return train_losses, valid_losses
 
@@ -263,6 +258,11 @@ def run(mode):
     print(f"  MODE: {mode}")
     print(f"{'=' * 60}")
 
+    # Seeds flow initialization, posterior sampling, and the test-set subsample
+    # used for the evaluation figures, so a run is reproducible end to end.
+    torch.manual_seed(SEED)
+    np.random.seed(SEED)
+
     input_dim = NUM_BINS * len(PROPERTIES) if mode == "combined" else NUM_BINS
 
     sim_indices = discover_simulations(BINNED_DATA_DIR, NUM_SIMS)
@@ -280,20 +280,22 @@ def run(mode):
     x_train, x_valid, x_test, y_train, y_valid, y_test = prepare_dataset(X, Y, SEED)
     print(f"  Train: {x_train.shape[0]}  Valid: {x_valid.shape[0]}  Test: {x_test.shape[0]}")
 
-    dist_x1, dist_x2_given_x1, ctx_tf, cond_tf = create_cond_dist(
-        NUM_PARAMS, input_dim, N_CONTEXT_LAYERS, N_CONDITIONAL_LAYERS
+    dist_x2_given_x1, cond_tf = create_cond_dist(
+        NUM_PARAMS, input_dim, N_CONDITIONAL_LAYERS
     )
-    all_transforms = ctx_tf + cond_tf
 
     # train
     t0 = time.time()
     train_losses, valid_losses = train_flow(
-        dist_x1, dist_x2_given_x1, all_transforms,
+        dist_x2_given_x1, cond_tf,
         x_train, y_train, STEPS, LEARNING_RATE, x_valid, y_valid,
         patience=PATIENCE
     )
     elapsed = time.time() - t0
     print(f"  Training completed in {elapsed:.1f}s")
+
+    mode_dir = os.path.join(CHECKPOINT_DIR, mode)
+    os.makedirs(mode_dir, exist_ok=True)
 
     # loss curves
     plt.figure(figsize=(8, 4))
@@ -304,18 +306,17 @@ def run(mode):
         plt.axvline(best_idx, color="gray", linestyle="--", alpha=0.7,
                      label=f"Best valid (step {best_idx})")
     plt.xlabel("Step")
-    plt.ylabel("Loss")
+    plt.ylabel(r"$-\log p(\theta \mid x)$  (nats)")
     plt.title(f"Loss Curve — {mode}")
     plt.legend()
     plt.grid(True)
     plt.tight_layout()
-    mode_dir = os.path.join(CHECKPOINT_DIR, mode)
-    os.makedirs(mode_dir, exist_ok=True)
     plt.savefig(os.path.join(mode_dir, f"loss_{mode}.png"), dpi=150)
+    plt.savefig(os.path.join(mode_dir, f"loss_{mode}.pdf"), bbox_inches="tight")
     plt.show()
 
     # checkpoint
-    save_checkpoint(all_transforms, os.path.join(mode_dir, f"flow_{mode}.pt"))
+    save_checkpoint(cond_tf, os.path.join(mode_dir, f"flow_{mode}.pt"))
 
     # evaluate
     print(f"\n  Evaluation on test set ({x_test.shape[0]} simulations):")
@@ -324,7 +325,7 @@ def run(mode):
         n_samples=N_POSTERIOR_SAMPLES, save_dir=mode_dir, mode_label=mode
     )
 
-    return dist_x1, dist_x2_given_x1, all_transforms, y_scaler
+    return dist_x2_given_x1, cond_tf, y_scaler
 
 
 # entry point
