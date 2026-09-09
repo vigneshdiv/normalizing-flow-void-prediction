@@ -27,10 +27,17 @@ MODE = "combined"
 
 STEPS = 1000  # upper bound
 LEARNING_RATE = 7e-4
+BATCH_SIZE = 64  # mini-batch size for training; validation stays full-batch
+# L2 penalty on the flow parameters. Adam couples this to the adaptive step, so
+# the useful scale is far larger than the AdamW-style 1e-4; 0.2 to 0.5 was a
+# broad plateau in a validation sweep over 0 to 10.
+WEIGHT_DECAY = 0.2
 N_CONDITIONAL_LAYERS = 4
 SEED = 45
 N_POSTERIOR_SAMPLES = 1000
-PATIENCE = 50  # stop training if validation loss hasn't improved for this many steps
+# Steps without validation improvement before stopping. One step is one pass
+# over the training set, so this is 12 epochs rather than 12 updates.
+PATIENCE = 12
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -108,9 +115,15 @@ def prepare_dataset(X, Y, seed=42):
 # training
 
 def train_flow(dist_x2_given_x1, transforms, x_train, y_train,
-               steps, lr, x_valid=None, y_valid=None, patience=None):
+               steps, lr, x_valid=None, y_valid=None, patience=None,
+               batch_size=None, weight_decay=0.0):
     modules = torch.nn.ModuleList(transforms)
-    optimizer = torch.optim.Adam(modules.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(modules.parameters(), lr=lr,
+                                 weight_decay=weight_decay)
+
+    n_train = x_train.shape[0]
+    if batch_size is None or batch_size >= n_train:
+        batch_size = n_train
 
     train_losses, valid_losses = [], []
     best_valid_loss = float("inf")
@@ -119,13 +132,21 @@ def train_flow(dist_x2_given_x1, transforms, x_train, y_train,
     steps_without_improvement = 0
 
     for step in range(steps):
-        optimizer.zero_grad()
-        ln_p_x2 = dist_x2_given_x1.condition(x_train.detach()).log_prob(y_train.detach())
-        loss = -ln_p_x2.mean()
-        loss.backward()
-        optimizer.step()
-        dist_x2_given_x1.clear_cache()
-        train_losses.append(loss.item())
+        # One step is one pass over the training set in shuffled mini-batches.
+        perm = torch.randperm(n_train)
+        loss_sum = 0.0
+        for start in range(0, n_train, batch_size):
+            idx = perm[start:start + batch_size]
+            x_batch, y_batch = x_train[idx], y_train[idx]
+            optimizer.zero_grad()
+            ln_p_x2 = dist_x2_given_x1.condition(x_batch.detach()).log_prob(y_batch.detach())
+            loss = -ln_p_x2.mean()
+            loss.backward()
+            optimizer.step()
+            dist_x2_given_x1.clear_cache()
+            # Weighted by batch size so a short final batch does not skew the mean.
+            loss_sum += loss.item() * idx.numel()
+        train_losses.append(loss_sum / n_train)
 
         if x_valid is not None:
             with torch.no_grad():
@@ -148,7 +169,7 @@ def train_flow(dist_x2_given_x1, transforms, x_train, y_train,
                 break
 
         if step % 10 == 0:
-            msg = f"  step {step:4d} | train loss: {loss.item():.4f}"
+            msg = f"  step {step:4d} | train loss: {train_losses[-1]:.4f}"
             if valid_losses:
                 msg += f" | valid loss: {valid_losses[-1]:.4f}"
             print(msg)
@@ -289,7 +310,7 @@ def run(mode):
     train_losses, valid_losses = train_flow(
         dist_x2_given_x1, cond_tf,
         x_train, y_train, STEPS, LEARNING_RATE, x_valid, y_valid,
-        patience=PATIENCE
+        patience=PATIENCE, batch_size=BATCH_SIZE, weight_decay=WEIGHT_DECAY
     )
     elapsed = time.time() - t0
     print(f"  Training completed in {elapsed:.1f}s")
