@@ -23,9 +23,10 @@ import flow
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Two square panels side by side.
+# Two square panels side by side. Height is only a starting canvas;
+# bbox_inches="tight" crops leftover vertical padding on save.
 FIG_WIDTH_IN = 7.2
-FIG_HEIGHT_IN = 4.4
+FIG_HEIGHT_IN = 3.4
 FONT_PT = 10
 
 PANELS = [
@@ -88,7 +89,7 @@ def main(mode="combined"):
     idxs = np.random.choice(true.shape[0], n_show, replace=False)
 
     fig, axes = plt.subplots(1, 2, figsize=(FIG_WIDTH_IN, FIG_HEIGHT_IN))
-    fig.subplots_adjust(left=0.08, right=0.98, top=0.96, bottom=0.14, wspace=0.28)
+    fig.subplots_adjust(left=0.08, right=0.98, top=0.98, bottom=0.12, wspace=0.28)
 
     for ax, (pname, label) in zip(axes, PANELS):
         j = flow.PARAM_NAMES.index(pname)
@@ -109,11 +110,10 @@ def main(mode="combined"):
         ax.text(0.97, 0.04, label, transform=ax.transAxes,
                 fontsize=FONT_PT + 6, va="bottom", ha="right")
 
-    # Saved without bbox_inches="tight" so the margins above are preserved and
-    # the output width is exactly FIG_WIDTH_IN.
     out_pdf = os.path.join(BASE_DIR, "checkpoints", mode, f"eval_all_{mode}.pdf")
-    fig.savefig(out_pdf)
-    fig.savefig(out_pdf.replace(".pdf", ".png"), dpi=300)
+    fig.savefig(out_pdf, bbox_inches="tight", pad_inches=0.02)
+    fig.savefig(out_pdf.replace(".pdf", ".png"), dpi=300,
+                bbox_inches="tight", pad_inches=0.02)
     print(f"Saved: {out_pdf}")
     print(f"Saved: {out_pdf.replace('.pdf', '.png')}")
 

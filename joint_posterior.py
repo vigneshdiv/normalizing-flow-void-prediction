@@ -136,10 +136,12 @@ def main(mode="combined"):
               f"sigma_8={s8_true:.4f}  |  posterior mean "
               f"Omega_m={om.mean():.4f}  sigma_8={s8.mean():.4f}")
 
-    fig.tight_layout()
+    # Keep panels close; outer crop is handled by bbox_inches below.
+    fig.subplots_adjust(wspace=0.28, hspace=0.30)
     out = os.path.join(BASE_DIR, "checkpoints", mode, "joint_posterior_om_s8.pdf")
-    fig.savefig(out, dpi=300, bbox_inches="tight")
-    fig.savefig(out.replace(".pdf", ".png"), dpi=300, bbox_inches="tight")
+    fig.savefig(out, dpi=300, bbox_inches="tight", pad_inches=0.02)
+    fig.savefig(out.replace(".pdf", ".png"), dpi=300,
+                bbox_inches="tight", pad_inches=0.02)
     print(f"Saved: {out}")
     print(f"Saved: {out.replace('.pdf', '.png')}")
 
